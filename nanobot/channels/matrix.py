@@ -355,11 +355,15 @@ class MatrixChannel(BaseChannel):
         if not self.client:
             return
         text = msg.content or ""
+        # Strip /voice prefix if the agent accidentally echoes it in outbound content
+        if text.strip().lower().startswith("/voice"):
+            text = text.strip()[len("/voice"):].strip()
         
         # Generate TTS voice only when explicitly requested (/voice command or voice room)
         voice_path = None
         voice_requested = bool((msg.metadata or {}).get("voice_requested"))
-        if self._tts_provider and voice_requested and msg.content and msg.content != "[empty message]":
+        logger.info("TTS DEBUG: provider={}, voice_requested={}, content_len={}", self._tts_provider is not None, voice_requested, len(msg.content) if msg.content else 0)
+        if self._tts_provider and voice_requested and text and text != "[empty message]":
             try:
                 import tempfile
                 from pathlib import Path
@@ -368,8 +372,8 @@ class MatrixChannel(BaseChannel):
                 with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as f:
                     voice_path = Path(f.name)
                 
-                # Generate speech
-                result = await self._tts_provider.speak(msg.content, voice_path)
+                # Generate speech using stripped text
+                result = await self._tts_provider.speak(text, voice_path)
                 if result and voice_path.exists():
                     logger.info("TTS generated for room {}: {}...", msg.chat_id, msg.content[:30])
                 else:
