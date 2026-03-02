@@ -148,7 +148,7 @@ class MatrixChannel(BaseChannel):
     name = "matrix"
 
     def __init__(self, config: Any, bus, *, restrict_to_workspace: bool = False,
-                 workspace: Path | None = None):
+                 workspace: Path | None = None, transcriber=None, tts_provider=None):
         super().__init__(config, bus)
         self.client: AsyncClient | None = None
         self._sync_task: asyncio.Task | None = None
@@ -157,6 +157,8 @@ class MatrixChannel(BaseChannel):
         self._workspace = workspace.expanduser().resolve() if workspace else None
         self._server_upload_limit_bytes: int | None = None
         self._server_upload_limit_checked = False
+        self._transcriber = transcriber
+        self._tts_provider = tts_provider
 
     async def start(self) -> None:
         """Start Matrix client and begin sync loop."""
@@ -353,7 +355,35 @@ class MatrixChannel(BaseChannel):
         if not self.client:
             return
         text = msg.content or ""
+        
+        # Generate TTS voice only when explicitly requested (/voice command or voice room)
+        voice_path = None
+        voice_requested = bool((msg.metadata or {}).get("voice_requested"))
+        if self._tts_provider and voice_requested and msg.content and msg.content != "[empty message]":
+            try:
+                import tempfile
+                from pathlib import Path
+                
+                # Create temp file for voice
+                with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as f:
+                    voice_path = Path(f.name)
+                
+                # Generate speech
+                result = await self._tts_provider.speak(msg.content, voice_path)
+                if result and voice_path.exists():
+                    logger.info("TTS generated for room {}: {}...", msg.chat_id, msg.content[:30])
+                else:
+                    voice_path = None
+            except Exception as e:
+                logger.error("TTS generation failed: {}", e)
+                voice_path = None
+
         candidates = self._collect_outbound_media_candidates(msg.media)
+        
+        # Add TTS voice to media if generated
+        if voice_path and voice_path.exists():
+            candidates.append(voice_path)
+        
         relates_to = self._build_thread_relates_to(msg.metadata)
         is_progress = bool((msg.metadata or {}).get("_progress"))
         try:
@@ -652,11 +682,15 @@ class MatrixChannel(BaseChannel):
 
     def _base_metadata(self, room: MatrixRoom, event: RoomMessage) -> dict[str, Any]:
         """Build common metadata for text and media handlers."""
-        meta: dict[str, Any] = {"room": getattr(room, "display_name", room.room_id)}
+        display_name = getattr(room, "display_name", room.room_id)
+        meta: dict[str, Any] = {"room": display_name}
         if isinstance(eid := getattr(event, "event_id", None), str) and eid:
             meta["event_id"] = eid
         if thread := self._thread_metadata(event):
             meta.update(thread)
+        # Auto-enable voice for rooms with 'voice' in the name
+        if "voice" in display_name.lower():
+            meta["voice_requested"] = True
         return meta
 
     async def _on_message(self, room: MatrixRoom, event: RoomMessageText) -> None:
@@ -664,9 +698,17 @@ class MatrixChannel(BaseChannel):
             return
         await self._start_typing_keepalive(room.room_id)
         try:
+            content = event.body
+            meta = self._base_metadata(room, event)
+            # /voice prefix triggers TTS for this message
+            if content.strip().lower().startswith("/voice"):
+                meta["voice_requested"] = True
+                content = content.strip()[len("/voice"):].strip()
+                if not content:
+                    content = "hoi"
             await self._handle_message(
                 sender_id=event.sender, chat_id=room.room_id,
-                content=event.body, metadata=self._base_metadata(room, event),
+                content=content, metadata=meta,
             )
         except Exception:
             await self._stop_typing_keepalive(room.room_id, clear_typing=True)
@@ -679,7 +721,20 @@ class MatrixChannel(BaseChannel):
         parts: list[str] = []
         if isinstance(body := getattr(event, "body", None), str) and body.strip():
             parts.append(body.strip())
-        if marker:
+
+        # Transcribe audio/voice messages automatically
+        transcribed = False
+        if attachment and attachment.get("type") == "audio" and self._transcriber:
+            try:
+                transcription = await self._transcriber.transcribe(attachment["path"])
+                if transcription:
+                    logger.info("Matrix audio transcribed: {}...", transcription[:60])
+                    parts.append(f"[transcription: {transcription}]")
+                    transcribed = True
+            except Exception as e:
+                logger.error("Matrix audio transcription failed: {}", e)
+
+        if not transcribed:
             parts.append(marker)
 
         await self._start_typing_keepalive(room.room_id)

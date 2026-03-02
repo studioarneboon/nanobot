@@ -121,10 +121,14 @@ class TelegramChannel(BaseChannel):
         config: TelegramConfig,
         bus: MessageBus,
         groq_api_key: str = "",
+        transcriber=None,
+        tts_provider=None,
     ):
         super().__init__(config, bus)
         self.config: TelegramConfig = config
-        self.groq_api_key = groq_api_key
+        self.groq_api_key = groq_api_key  # kept for backward compat
+        self._transcriber = transcriber
+        self._tts_provider = tts_provider
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
@@ -242,7 +246,43 @@ class TelegramChannel(BaseChannel):
                     allow_sending_without_reply=True
                 )
 
-        # Send media files
+        # Generate TTS voice if enabled
+        voice_path = None
+        if self._tts_provider and msg.content and msg.content != "[empty message]":
+            try:
+                import tempfile
+                from pathlib import Path
+                
+                # Create temp file for voice
+                with tempfile.NamedTemporaryFile(suffix='.ogg', delete=False) as f:
+                    voice_path = Path(f.name)
+                
+                # Generate speech
+                result = await self._tts_provider.speak(msg.content, voice_path)
+                if result and voice_path.exists():
+                    logger.info("TTS generated for chat {}: {}...", chat_id, msg.content[:30])
+                else:
+                    voice_path = None
+            except Exception as e:
+                logger.error("TTS generation failed: {}", e)
+                voice_path = None
+
+        # Send voice message if TTS generated successfully
+        if voice_path and voice_path.exists():
+            try:
+                with open(voice_path, 'rb') as f:
+                    await self._app.bot.send_voice(
+                        chat_id=chat_id,
+                        voice=f,
+                        reply_parameters=reply_params
+                    )
+                logger.debug("TTS voice sent to {}", chat_id)
+            except Exception as e:
+                logger.error("Failed to send TTS voice: {}", e)
+                # Fall back to text
+                voice_path = None
+
+        # Send media files (only if no TTS voice sent, to avoid duplicate)
         for media_path in (msg.media or []):
             try:
                 media_type = self._get_media_type(media_path)
@@ -267,8 +307,8 @@ class TelegramChannel(BaseChannel):
                     reply_parameters=reply_params
                 )
 
-        # Send text content
-        if msg.content and msg.content != "[empty message]":
+        # Send text content (skip if TTS voice was sent)
+        if not voice_path and msg.content and msg.content != "[empty message]":
             for chunk in _split_message(msg.content):
                 try:
                     html = _markdown_to_telegram_html(chunk)
@@ -385,10 +425,8 @@ class TelegramChannel(BaseChannel):
                 media_paths.append(str(file_path))
 
                 # Handle voice transcription
-                if media_type == "voice" or media_type == "audio":
-                    from nanobot.providers.transcription import GroqTranscriptionProvider
-                    transcriber = GroqTranscriptionProvider(api_key=self.groq_api_key)
-                    transcription = await transcriber.transcribe(file_path)
+                if (media_type == "voice" or media_type == "audio") and self._transcriber:
+                    transcription = await self._transcriber.transcribe(file_path)
                     if transcription:
                         logger.info("Transcribed {}: {}...", media_type, transcription[:50])
                         content_parts.append(f"[transcription: {transcription}]")

@@ -248,6 +248,7 @@ class ProvidersConfig(Base):
     """Configuration for LLM providers."""
 
     custom: ProviderConfig = Field(default_factory=ProviderConfig)  # Any OpenAI-compatible endpoint
+    opencode: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenCode (free models via opencode.ai)
     anthropic: ProviderConfig = Field(default_factory=ProviderConfig)
     openai: ProviderConfig = Field(default_factory=ProviderConfig)
     openrouter: ProviderConfig = Field(default_factory=ProviderConfig)
@@ -322,6 +323,21 @@ class ToolsConfig(Base):
     mcp_servers: dict[str, MCPServerConfig] = Field(default_factory=dict)
 
 
+class SttConfig(Base):
+    """Speech-to-text configuration for voice message transcription."""
+
+    provider: str = "auto"  # "auto" (faster-whisper > groq), "faster-whisper", or "groq"
+    model: str = "base"  # Whisper model size: tiny, base, small, medium, large
+    language: str | None = "nl"  # ISO 639-1 language hint, None = auto-detect
+
+
+class TtsConfig(Base):
+    """Text-to-speech configuration for voice output."""
+
+    enabled: bool = False  # Enable voice output
+    voice: str = "Luna"  # Voice: Bella, Jasper, Luna, Bruno, Rosie, Hugo, Kiki, Leo
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
 
@@ -330,6 +346,8 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    stt: SttConfig = Field(default_factory=SttConfig)
+    tts: TtsConfig = Field(default_factory=TtsConfig)
 
     @property
     def workspace_path(self) -> Path:

@@ -81,6 +81,17 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
         is_direct=True,
     ),
 
+    # === OpenCode (opencode.ai/zen — free OpenAI-compatible models) =======
+    ProviderSpec(
+        name="opencode",
+        keywords=("opencode",),
+        env_key="OPENCODE_API_KEY",
+        display_name="OpenCode",
+        litellm_prefix="",
+        is_direct=True,
+        default_api_base="https://opencode.ai/zen/v1",
+    ),
+
     # === Gateways (detected by api_key / api_base, not model name) =========
     # Gateways can route any model, so they win in fallback.
 

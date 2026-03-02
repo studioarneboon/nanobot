@@ -34,6 +34,12 @@ class ChannelManager:
     def _init_channels(self) -> None:
         """Initialize channels based on config."""
 
+        # Create shared transcription provider for voice messages
+        transcriber = self._create_transcriber()
+        
+        # Create shared TTS provider for voice output
+        tts_provider = self._create_tts_provider()
+
         # Telegram channel
         if self.config.channels.telegram.enabled:
             try:
@@ -42,6 +48,8 @@ class ChannelManager:
                     self.config.channels.telegram,
                     self.bus,
                     groq_api_key=self.config.providers.groq.api_key,
+                    transcriber=transcriber,
+                    tts_provider=tts_provider,
                 )
                 logger.info("Telegram channel enabled")
             except ImportError as e:
@@ -144,6 +152,8 @@ class ChannelManager:
                 self.channels["matrix"] = MatrixChannel(
                     self.config.channels.matrix,
                     self.bus,
+                    transcriber=transcriber,
+                    tts_provider=tts_provider,
                 )
                 logger.info("Matrix channel enabled")
             except ImportError as e:
@@ -248,6 +258,36 @@ class ChannelManager:
             }
             for name, channel in self.channels.items()
         }
+
+    def _create_transcriber(self):
+        """Create a shared transcription provider based on config."""
+        try:
+            from nanobot.providers.transcription import create_transcriber
+
+            stt = self.config.stt
+            return create_transcriber(
+                stt_model=stt.model,
+                stt_language=stt.language,
+                stt_provider=stt.provider,
+                groq_api_key=self.config.providers.groq.api_key,
+            )
+        except Exception as e:
+            logger.warning("Failed to create transcription provider: {}", e)
+            return None
+
+    def _create_tts_provider(self):
+        """Create a shared TTS provider based on config."""
+        try:
+            from nanobot.providers.tts import create_tts_provider
+
+            tts = self.config.tts
+            return create_tts_provider(
+                tts_enabled=tts.enabled,
+                tts_voice=tts.voice,
+            )
+        except Exception as e:
+            logger.warning("Failed to create TTS provider: {}", e)
+            return None
 
     @property
     def enabled_channels(self) -> list[str]:
