@@ -91,6 +91,7 @@ class AgentLoop:
         self._fallback_index = 0                        # next fallback to try
         self._primary_model = self.model                # remember original for /model reset
         self._primary_provider = provider
+        self._current_provider_name: str | None = None  # set on each _switch_model call
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
@@ -568,15 +569,23 @@ class AgentLoop:
         return False
 
     def _is_local_provider(self) -> bool:
-        """Return True if the current provider is a slow local model (ollama CPU etc.)."""
-        if not self._config:
-            return False
-        from nanobot.providers.registry import find_by_name
-        provider_name = self._config.get_provider_name(self.model)
-        spec = find_by_name(provider_name) if provider_name else None
-        return bool(spec and spec.is_local)
+        """Return True if the current provider is a slow local model (ollama CPU etc.).
 
-    def _switch_model(self, model: str, provider: LLMProvider | None = None) -> None:
+        Checks the actual provider instance type — not config auto-detection,
+        which can misidentify models (e.g. qwen2.5:0.5b → dashscope).
+        """
+        from nanobot.providers.ollama_provider import OllamaProvider
+        if isinstance(self.provider, OllamaProvider):
+            return True
+        # Fallback: check registry spec via stored _current_provider_name
+        if self._current_provider_name and self._config:
+            from nanobot.providers.registry import find_by_name
+            spec = find_by_name(self._current_provider_name)
+            return bool(spec and spec.is_local)
+        return False
+
+    def _switch_model(self, model: str, provider: LLMProvider | None = None,
+                      provider_name: str | None = None) -> None:
         """Switch active model (and optionally provider) at runtime.
 
         Also toggles context.local_mode based on whether the new provider is local.
@@ -584,6 +593,8 @@ class AgentLoop:
         self.model = model
         if provider is not None:
             self.provider = provider
+        if provider_name is not None:
+            self._current_provider_name = provider_name
         # Keep subagents in sync
         self.subagents.model = model
         if provider is not None:
@@ -671,12 +682,12 @@ class AgentLoop:
             try:
                 from nanobot.providers.factory import make_provider
                 new_provider = make_provider(self._config, model=model, provider_name=provider_name)
-                self._switch_model(model, new_provider)
+                self._switch_model(model, new_provider, provider_name=provider_name)
                 return
             except Exception as e:
                 logger.warning("Could not instantiate provider '{}' for '{}': {}. Reusing current provider.", provider_name, model, e)
         # Fallback: keep current provider, just swap model name
-        self._switch_model(model)
+        self._switch_model(model, provider_name=provider_name)
 
     def _save_model_to_config(self, model: str) -> None:
         """Persist model name to ~/.nanobot/config.json."""
