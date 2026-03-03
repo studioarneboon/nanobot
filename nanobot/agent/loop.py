@@ -436,17 +436,16 @@ class AgentLoop:
                     if snapshot:
                         temp = Session(key=session.key)
                         temp.messages = list(snapshot)
-                        if not await self._consolidate_memory(temp, archive_all=True):
-                            return OutboundMessage(
-                                channel=msg.channel, chat_id=msg.chat_id,
-                                content="Memory archival failed, session not cleared. Please try again.",
+                        try:
+                            # Timeout consolidation — don't block /new indefinitely
+                            await asyncio.wait_for(
+                                self._consolidate_memory(temp, archive_all=True),
+                                timeout=30.0,
                             )
-            except Exception:
-                logger.exception("/new archival failed for {}", session.key)
-                return OutboundMessage(
-                    channel=msg.channel, chat_id=msg.chat_id,
-                    content="Memory archival failed, session not cleared. Please try again.",
-                )
+                        except asyncio.TimeoutError:
+                            logger.warning("/new consolidation timed out — clearing session anyway")
+                        except Exception:
+                            logger.exception("/new archival failed for {}", session.key)
             finally:
                 self._consolidating.discard(session.key)
 
@@ -454,7 +453,7 @@ class AgentLoop:
             self.sessions.save(session)
             self.sessions.invalidate(session.key)
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="New session started.")
+                                  content="New session started. 🐈")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
                                   content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/voice — Reply with voice message\n/model [name|save|reset] — Switch or inspect active model\n/help — Show available commands")
@@ -670,9 +669,9 @@ class AgentLoop:
                 content = f"Invalid number. Choose 1–{len(self._fallback_models)}. Use `/model` to see the list."
 
         elif sub == "save" and len(parts) == 2:
-            # /model save — persist current active model to config.json
-            self._save_model_to_config(self.model)
-            content = f"Saved `{self.model}` as default model in config.json."
+            # /model save — persist current active model + provider to config.json
+            self._save_model_to_config(self.model, provider=self._current_provider_name)
+            content = f"Saved `{self.model}` ({self._current_provider_name or 'auto'}) as default in config.json."
 
         elif sub == "save" and len(parts) == 3:
             # /model save <name|number> — switch + persist
@@ -688,8 +687,8 @@ class AgentLoop:
                     return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
             else:
                 await self._switch_model_by_name(arg)
-            self._save_model_to_config(self.model)
-            content = f"Switched to `{self.model}` and saved as default in config.json."
+            self._save_model_to_config(self.model, provider=self._current_provider_name)
+            content = f"Switched to `{self.model}` ({self._current_provider_name or 'auto'}) and saved as default in config.json."
 
         elif sub == "reset":
             # /model reset — back to primary (startup) model
@@ -735,16 +734,20 @@ class AgentLoop:
         # Fallback: keep current provider, just swap model name
         self._switch_model(model, provider_name=provider_name)
 
-    def _save_model_to_config(self, model: str) -> None:
-        """Persist model name to ~/.nanobot/config.json."""
+    def _save_model_to_config(self, model: str, provider: str | None = None) -> None:
+        """Persist model name (and optionally provider) to ~/.nanobot/config.json."""
         try:
             from nanobot.config.loader import load_config, save_config
             cfg = load_config()
             cfg.agents.defaults.model = model
+            if provider and provider != "auto":
+                cfg.agents.defaults.provider = provider
             save_config(cfg)
             # Keep our local _config in sync too
             if self._config:
                 self._config.agents.defaults.model = model
+                if provider and provider != "auto":
+                    self._config.agents.defaults.provider = provider
         except Exception as e:
             logger.error("Failed to save model to config: {}", e)
 
