@@ -33,6 +33,16 @@ class CustomProvider(LLMProvider):
         try:
             return self._parse(await self._client.chat.completions.create(**kwargs))
         except Exception as e:
+            error_str = str(e).lower()
+            rate_limit_signals = (
+                "rate limit", "ratelimit", "rate_limit",
+                "429", "too many requests",
+                "overloaded", "capacity", "quota exceeded",
+                "freeusagelimiterror", "free usage limit",
+                "service unavailable", "503", "502",
+            )
+            if any(sig in error_str for sig in rate_limit_signals):
+                return LLMResponse(content=f"Error: {e}", finish_reason="rate_limit")
             return LLMResponse(content=f"Error: {e}", finish_reason="error")
 
     def _parse(self, response: Any) -> LLMResponse:

@@ -65,6 +65,8 @@ class AgentLoop:
         session_manager: SessionManager | None = None,
         mcp_servers: dict | None = None,
         channels_config: ChannelsConfig | None = None,
+        config: Any | None = None,
+        fallback_models: list | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         self.bus = bus
@@ -82,6 +84,13 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+
+        # Model fallback state
+        self._config = config                           # kept for runtime provider factory
+        self._fallback_models = list(fallback_models or [])
+        self._fallback_index = 0                        # next fallback to try
+        self._primary_model = self.model                # remember original for /model reset
+        self._primary_provider = provider
 
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
@@ -238,12 +247,29 @@ class AgentLoop:
                     )
             else:
                 clean = self._strip_think(response.content)
+                # Rate-limit: try automatic fallback to next model in list.
+                if response.finish_reason == "rate_limit":
+                    logger.warning("Rate limited on model '{}', trying fallback...", self.model)
+                    switched = await self._try_switch_to_fallback()
+                    if switched:
+                        logger.info("Switched to fallback model '{}', retrying...", self.model)
+                        continue  # retry with new model
+                    # No more fallbacks available
+                    logger.error("All fallback models exhausted. Last error: {}", (clean or "")[:200])
+                    final_content = (
+                        f"All models are currently rate limited or unavailable.\n"
+                        f"Last error: {clean or 'unknown error'}\n"
+                        f"Try /model <name> to switch manually, or try again later."
+                    )
+                    break
                 # Don't persist error responses to session history — they can
                 # poison the context and cause permanent 400 loops (#1303).
                 if response.finish_reason == "error":
                     logger.error("LLM returned error: {}", (clean or "")[:200])
                     final_content = clean or "Sorry, I encountered an error calling the AI model."
                     break
+                # Reset fallback index on successful response — primary model may be available again
+                self._fallback_index = 0
                 messages = self.context.add_assistant_message(
                     messages, clean, reasoning_content=response.reasoning_content,
                     thinking_blocks=response.thinking_blocks,
@@ -395,7 +421,9 @@ class AgentLoop:
                                   content="New session started.")
         if cmd == "/help":
             return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id,
-                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/voice — Reply with voice message\n/help — Show available commands")
+                                  content="🐈 nanobot commands:\n/new — Start a new conversation\n/stop — Stop the current task\n/voice — Reply with voice message\n/model [name|save|reset] — Switch or inspect active model\n/help — Show available commands")
+        if cmd.startswith("/model"):
+            return await self._handle_model_command(msg)
 
         unconsolidated = len(session.messages) - session.last_consolidated
         if (unconsolidated >= self.memory_window and session.key not in self._consolidating):
@@ -491,6 +519,122 @@ class AgentLoop:
             entry.setdefault("timestamp", datetime.now().isoformat())
             session.messages.append(entry)
         session.updated_at = datetime.now()
+
+    async def _try_switch_to_fallback(self) -> bool:
+        """Try to switch to the next fallback model. Returns True if switched, False if exhausted."""
+        if not self._fallback_models or not self._config:
+            return False
+
+        # Cycle through all fallbacks; wrap around once to retry from start next time
+        attempts = 0
+        while attempts < len(self._fallback_models):
+            fb = self._fallback_models[self._fallback_index % len(self._fallback_models)]
+            self._fallback_index += 1
+            attempts += 1
+            try:
+                from nanobot.providers.factory import make_provider
+                new_provider = make_provider(self._config, model=fb.model, provider_name=fb.provider)
+                self._switch_model(fb.model, new_provider)
+                logger.info("Auto-fallback: switched to '{}' (provider: {})", fb.model, fb.provider)
+                return True
+            except Exception as e:
+                logger.warning("Fallback model '{}' unavailable: {}", fb.model, e)
+                continue
+
+        # All fallbacks failed — reset index so next rate-limit starts fresh
+        self._fallback_index = 0
+        return False
+
+    def _switch_model(self, model: str, provider: LLMProvider | None = None) -> None:
+        """Switch active model (and optionally provider) at runtime."""
+        self.model = model
+        if provider is not None:
+            self.provider = provider
+        # Keep subagents in sync
+        self.subagents.model = model
+        if provider is not None:
+            self.subagents.provider = provider
+
+    async def _handle_model_command(self, msg: "InboundMessage") -> "OutboundMessage":
+        """Handle /model [name|save|save <name>] command."""
+        # Parse: preserve original case for model names, but command keyword is lowercased
+        raw = msg.content.strip()
+        parts = raw.split(maxsplit=2)
+        sub = parts[1].lower() if len(parts) > 1 else ""
+
+        if len(parts) == 1:
+            # /model — show current + fallback list
+            lines = [f"**Active model:** `{self.model}`"]
+            if self._fallback_models:
+                lines.append("\n**Fallback list:**")
+                for i, fb in enumerate(self._fallback_models, 1):
+                    marker = " ← next" if (i - 1) == (self._fallback_index % len(self._fallback_models)) else ""
+                    lines.append(f"  {i}. `{fb.model}` ({fb.provider}){marker}")
+            else:
+                lines.append("_No fallback models configured._")
+            content = "\n".join(lines)
+
+        elif sub == "save" and len(parts) == 2:
+            # /model save — persist current active model to config.json
+            self._save_model_to_config(self.model)
+            content = f"Saved `{self.model}` as default model in config.json."
+
+        elif sub == "save" and len(parts) == 3:
+            # /model save <name> — switch + persist
+            new_model = parts[2]
+            await self._switch_model_by_name(new_model)
+            self._save_model_to_config(self.model)
+            content = f"Switched to `{self.model}` and saved as default in config.json."
+
+        elif sub == "reset":
+            # /model reset — back to primary (startup) model
+            if self._config:
+                try:
+                    from nanobot.providers.factory import make_provider
+                    new_provider = make_provider(self._config, model=self._primary_model)
+                    self._switch_model(self._primary_model, new_provider)
+                    self._fallback_index = 0
+                    content = f"Reset to primary model: `{self.model}`"
+                except Exception as e:
+                    content = f"Failed to reset to primary model: {e}"
+            else:
+                self._switch_model(self._primary_model)
+                self._fallback_index = 0
+                content = f"Reset to primary model: `{self.model}`"
+
+        else:
+            # /model <name> — session switch (not persisted)
+            new_model = parts[1]  # use original case
+            await self._switch_model_by_name(new_model)
+            content = f"Switched to `{self.model}` for this session. Use `/model save` to persist."
+
+        return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+
+    async def _switch_model_by_name(self, model: str) -> None:
+        """Switch to a named model, instantiating the right provider from config."""
+        if self._config:
+            try:
+                from nanobot.providers.factory import make_provider
+                new_provider = make_provider(self._config, model=model)
+                self._switch_model(model, new_provider)
+                return
+            except Exception as e:
+                logger.warning("Could not auto-detect provider for '{}': {}. Reusing current provider.", model, e)
+        # Fallback: keep current provider, just swap model name
+        self._switch_model(model)
+
+    def _save_model_to_config(self, model: str) -> None:
+        """Persist model name to ~/.nanobot/config.json."""
+        try:
+            from nanobot.config.loader import load_config, save_config
+            cfg = load_config()
+            cfg.agents.defaults.model = model
+            save_config(cfg)
+            # Keep our local _config in sync too
+            if self._config:
+                self._config.agents.defaults.model = model
+        except Exception as e:
+            logger.error("Failed to save model to config: {}", e)
 
     async def _consolidate_memory(self, session, archive_all: bool = False) -> bool:
         """Delegate to MemoryStore.consolidate(). Returns True on success."""

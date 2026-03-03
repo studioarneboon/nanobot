@@ -217,6 +217,13 @@ class ChannelsConfig(Base):
     matrix: MatrixConfig = Field(default_factory=MatrixConfig)
 
 
+class FallbackModel(Base):
+    """A fallback model/provider entry for automatic failover."""
+
+    model: str  # Model name, e.g. "qwen2.5:3b" or "z-ai/glm-4.5-air:free"
+    provider: str = "auto"  # Provider name or "auto" for auto-detection
+
+
 class AgentDefaults(Base):
     """Default agent configuration."""
 
@@ -228,6 +235,7 @@ class AgentDefaults(Base):
     max_tool_iterations: int = 40
     memory_window: int = 100
     reasoning_effort: str | None = None  # low / medium / high — enables LLM thinking mode
+    fallback_models: list[FallbackModel] = Field(default_factory=list)  # Ordered list of fallback models
 
 
 class AgentsConfig(Base):
@@ -265,6 +273,8 @@ class ProvidersConfig(Base):
     volcengine: ProviderConfig = Field(default_factory=ProviderConfig)  # VolcEngine (火山引擎) API gateway
     openai_codex: ProviderConfig = Field(default_factory=ProviderConfig)  # OpenAI Codex (OAuth)
     github_copilot: ProviderConfig = Field(default_factory=ProviderConfig)  # Github Copilot (OAuth)
+    ollama: ProviderConfig = Field(default_factory=ProviderConfig)  # Ollama local inference server
+    lmstudio: ProviderConfig = Field(default_factory=ProviderConfig)  # LM Studio local/remote inference
 
 
 class HeartbeatConfig(Base):

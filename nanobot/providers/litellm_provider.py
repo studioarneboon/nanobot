@@ -245,7 +245,22 @@ class LiteLLMProvider(LLMProvider):
             response = await acompletion(**kwargs)
             return self._parse_response(response)
         except Exception as e:
-            # Return error as content for graceful handling
+            error_str = str(e).lower()
+            # Detect rate-limit / capacity errors — signal with "rate_limit" so
+            # AgentLoop can automatically switch to a fallback model.
+            rate_limit_signals = (
+                "rate limit", "ratelimit", "rate_limit",
+                "429", "too many requests",
+                "overloaded", "capacity", "quota exceeded",
+                "freeusagelimiterror", "free usage limit",
+                "apiconnectionerror", "connection error",
+                "service unavailable", "503", "502",
+            )
+            if any(sig in error_str for sig in rate_limit_signals):
+                return LLMResponse(
+                    content=f"Error calling LLM: {str(e)}",
+                    finish_reason="rate_limit",
+                )
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
