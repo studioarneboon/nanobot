@@ -521,11 +521,26 @@ class AgentLoop:
     def _save_turn(self, session: Session, messages: list[dict], skip: int) -> None:
         """Save new-turn messages into session, truncating large tool results."""
         from datetime import datetime
+        # Track assistant messages that contain only 'message' tool calls —
+        # we'll skip those plus their tool results to avoid loop poisoning.
+        _skip_tool_ids: set[str] = set()
+
         for m in messages[skip:]:
             entry = dict(m)
             role, content = entry.get("role"), entry.get("content")
             if role == "assistant" and not content and not entry.get("tool_calls"):
                 continue  # skip empty assistant messages — they poison session context
+            # Skip assistant messages that ONLY call the 'message' tool — storing
+            # these causes the model to repeat the same message on the next turn.
+            if role == "assistant" and entry.get("tool_calls"):
+                tc_names = [tc.get("function", {}).get("name") for tc in entry["tool_calls"]]
+                if all(n == "message" for n in tc_names):
+                    for tc in entry["tool_calls"]:
+                        _skip_tool_ids.add(tc.get("id", ""))
+                    continue
+            # Skip tool results for skipped 'message' tool calls
+            if role == "tool" and entry.get("tool_call_id") in _skip_tool_ids:
+                continue
             if role == "tool" and isinstance(content, str) and len(content) > self._TOOL_RESULT_MAX_CHARS:
                 entry["content"] = content[:self._TOOL_RESULT_MAX_CHARS] + "\n... (truncated)"
             elif role == "user":
@@ -651,9 +666,19 @@ class AgentLoop:
             content = f"Saved `{self.model}` as default model in config.json."
 
         elif sub == "save" and len(parts) == 3:
-            # /model save <name> — switch + persist
-            new_model = parts[2]
-            await self._switch_model_by_name(new_model)
+            # /model save <name|number> — switch + persist
+            arg = parts[2]
+            if arg.isdigit():
+                # treat as fallback list index
+                idx = int(arg) - 1
+                if 0 <= idx < len(self._fallback_models):
+                    fb = self._fallback_models[idx]
+                    await self._switch_model_by_name(fb.model, provider_name=fb.provider)
+                else:
+                    content = f"Invalid number. Choose 1–{len(self._fallback_models)}."
+                    return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
+            else:
+                await self._switch_model_by_name(arg)
             self._save_model_to_config(self.model)
             content = f"Switched to `{self.model}` and saved as default in config.json."
 
