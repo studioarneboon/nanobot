@@ -388,36 +388,38 @@ PROVIDERS: tuple[ProviderSpec, ...] = (
     ),
 
     # Ollama: local inference server, OpenAI-compatible at localhost:11434.
-    # Uses LiteLLM's "ollama_chat/" prefix for proper streaming support.
+    # is_direct=True: bypasses LiteLLM, uses CustomProvider → direct OpenAI-compat HTTP.
     ProviderSpec(
         name="ollama",
         keywords=("ollama",),
         env_key="OLLAMA_API_KEY",
         display_name="Ollama (local)",
-        litellm_prefix="ollama_chat",       # qwen2.5:3b → ollama_chat/qwen2.5:3b
-        skip_prefixes=("ollama/", "ollama_chat/"),
+        litellm_prefix="",
+        skip_prefixes=(),
         env_extras=(),
         is_gateway=False,
         is_local=True,
+        is_direct=True,                     # bypass LiteLLM, talk directly to ollama's /v1
         detect_by_key_prefix="",
         detect_by_base_keyword="11434",     # auto-detect by ollama's default port in api_base
-        default_api_base="http://127.0.0.1:11434",
+        default_api_base="http://127.0.0.1:11434/v1",
         strip_model_prefix=False,
         model_overrides=(),
     ),
 
     # LM Studio: local/remote OpenAI-compatible endpoint (GUI or llmster daemon).
-    # Uses "openai/" prefix so LiteLLM routes via OpenAI-compatible path.
+    # is_direct=True: bypasses LiteLLM, uses CustomProvider → direct OpenAI-compat HTTP.
     ProviderSpec(
         name="lmstudio",
         keywords=("lmstudio",),
         env_key="OPENAI_API_KEY",
         display_name="LM Studio",
-        litellm_prefix="openai",            # model → openai/model (OpenAI-compat routing)
-        skip_prefixes=("openai/", "lmstudio/"),
+        litellm_prefix="",
+        skip_prefixes=(),
         env_extras=(),
         is_gateway=False,
         is_local=True,
+        is_direct=True,                     # bypass LiteLLM, talk directly to LM Studio's /v1
         detect_by_key_prefix="",
         detect_by_base_keyword="1234",      # auto-detect by LM Studio's default port in api_base
         default_api_base="http://localhost:1234/v1",

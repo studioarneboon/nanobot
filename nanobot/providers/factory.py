@@ -57,17 +57,16 @@ def make_provider(
     if resolved_provider_name == "openai_codex" or effective_model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=effective_model)
 
-    # Custom / opencode / lmstudio / ollama: direct OpenAI-compatible endpoints
-    # These bypass LiteLLM and talk to the endpoint directly.
-    direct_providers = {"custom", "opencode", "lmstudio", "ollama"}
-    if resolved_provider_name in direct_providers:
+    # Direct providers: bypass LiteLLM, talk straight to OpenAI-compatible endpoint.
+    # Determined by is_direct=True in ProviderSpec (custom, opencode, lmstudio, ollama, ...).
+    spec = find_by_name(resolved_provider_name) if resolved_provider_name else None
+    if resolved_provider_name == "custom" or (spec and spec.is_direct):
         return CustomProvider(
             api_key=p.api_key if (p and p.api_key) else "no-key",
-            api_base=api_base or "http://localhost:8000/v1",
+            api_base=api_base or (spec.default_api_base if spec else "http://localhost:8000/v1"),
             default_model=effective_model,
         )
 
-    spec = find_by_name(resolved_provider_name) if resolved_provider_name else None
     if not effective_model.startswith("bedrock/") and not (p and p.api_key) and not (spec and spec.is_oauth):
         from loguru import logger
         logger.error(

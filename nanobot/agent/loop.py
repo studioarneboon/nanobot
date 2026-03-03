@@ -570,9 +570,20 @@ class AgentLoop:
                 for i, fb in enumerate(self._fallback_models, 1):
                     marker = " ← next" if (i - 1) == (self._fallback_index % len(self._fallback_models)) else ""
                     lines.append(f"  {i}. `{fb.model}` ({fb.provider}){marker}")
+                lines.append("\nUse `/model <number>` or `/model <name>` to switch.")
             else:
                 lines.append("_No fallback models configured._")
             content = "\n".join(lines)
+
+        elif sub.isdigit():
+            # /model <number> — pick from fallback list by index
+            idx = int(sub) - 1
+            if 0 <= idx < len(self._fallback_models):
+                fb = self._fallback_models[idx]
+                await self._switch_model_by_name(fb.model)
+                content = f"Switched to `{self.model}` ({fb.provider}) for this session. Use `/model save` to persist."
+            else:
+                content = f"Invalid number. Choose 1–{len(self._fallback_models)}. Use `/model` to see the list."
 
         elif sub == "save" and len(parts) == 2:
             # /model save — persist current active model to config.json
