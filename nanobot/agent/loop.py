@@ -412,10 +412,12 @@ class AgentLoop:
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
 
-        # Slash commands — extract command from first line, strip injected platform tags
+        # Slash commands — only trigger if the message starts with '/' on the first line.
+        # Strip injected platform tags first, then check the first line only.
         import re as _re
         _clean_content = _re.sub(r"<system-reminder>.*?</system-reminder>", "", msg.content, flags=_re.DOTALL).strip()
-        cmd = _clean_content.split("\n")[0].strip().lower()
+        _first_line = _clean_content.split("\n")[0].strip()
+        cmd = _first_line.lower() if _first_line.startswith("/") else ""
         if cmd == "/new":
             lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
             self._consolidating.add(session.key)
@@ -606,8 +608,10 @@ class AgentLoop:
 
     async def _handle_model_command(self, msg: "InboundMessage") -> "OutboundMessage":
         """Handle /model [name|save|save <name>] command."""
-        # Parse: preserve original case for model names, but command keyword is lowercased
-        raw = msg.content.strip()
+        # Parse from the first line only (strip system-reminder and multi-line content)
+        import re as _re
+        _clean = _re.sub(r"<system-reminder>.*?</system-reminder>", "", msg.content, flags=_re.DOTALL).strip()
+        raw = _clean.split("\n")[0].strip()
         parts = raw.split(maxsplit=2)
         sub = parts[1].lower() if len(parts) > 1 else ""
 
