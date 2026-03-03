@@ -580,7 +580,8 @@ class AgentLoop:
             idx = int(sub) - 1
             if 0 <= idx < len(self._fallback_models):
                 fb = self._fallback_models[idx]
-                await self._switch_model_by_name(fb.model)
+                # Pass provider_name explicitly so auto-detection doesn't pick the wrong one
+                await self._switch_model_by_name(fb.model, provider_name=fb.provider)
                 content = f"Switched to `{self.model}` ({fb.provider}) for this session. Use `/model save` to persist."
             else:
                 content = f"Invalid number. Choose 1–{len(self._fallback_models)}. Use `/model` to see the list."
@@ -621,16 +622,23 @@ class AgentLoop:
 
         return OutboundMessage(channel=msg.channel, chat_id=msg.chat_id, content=content)
 
-    async def _switch_model_by_name(self, model: str) -> None:
-        """Switch to a named model, instantiating the right provider from config."""
+    async def _switch_model_by_name(self, model: str, provider_name: str | None = None) -> None:
+        """Switch to a named model, instantiating the right provider from config.
+
+        Args:
+            model: Model name to switch to.
+            provider_name: Force a specific provider (e.g. "ollama", "lmstudio").
+                           If None, auto-detects from model name — which can be wrong
+                           for locally-named models like "qwen2.5:3b".
+        """
         if self._config:
             try:
                 from nanobot.providers.factory import make_provider
-                new_provider = make_provider(self._config, model=model)
+                new_provider = make_provider(self._config, model=model, provider_name=provider_name)
                 self._switch_model(model, new_provider)
                 return
             except Exception as e:
-                logger.warning("Could not auto-detect provider for '{}': {}. Reusing current provider.", model, e)
+                logger.warning("Could not instantiate provider '{}' for '{}': {}. Reusing current provider.", provider_name, model, e)
         # Fallback: keep current provider, just swap model name
         self._switch_model(model)
 
