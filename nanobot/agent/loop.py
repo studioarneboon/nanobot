@@ -204,14 +204,36 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                reasoning_effort=self.reasoning_effort,
-            )
+            # Local models (ollama CPU): no tools, timeout, minimal context already set
+            is_local = self.context.local_mode
+            tools_for_call = None if is_local else self.tools.get_definitions()
+            local_timeout = 80.0  # seconds before we give up on a slow local model
+
+            try:
+                chat_coro = self.provider.chat(
+                    messages=messages,
+                    tools=tools_for_call,
+                    model=self.model,
+                    temperature=self.temperature,
+                    max_tokens=min(self.max_tokens, 512) if is_local else self.max_tokens,
+                    reasoning_effort=self.reasoning_effort,
+                )
+                if is_local:
+                    response = await asyncio.wait_for(chat_coro, timeout=local_timeout)
+                else:
+                    response = await chat_coro
+            except asyncio.TimeoutError:
+                logger.warning("Local model '{}' timed out after {}s, trying fallback...", self.model, local_timeout)
+                switched = await self._try_switch_to_fallback()
+                if switched:
+                    logger.info("Switched to fallback model '{}' after timeout", self.model)
+                    # Rebuild messages with new (non-local) context if we left local mode
+                    continue
+                final_content = (
+                    f"The local model timed out and no further fallbacks are available.\n"
+                    f"Try `/model reset` to go back to the primary model."
+                )
+                break
 
             if response.has_tool_calls:
                 if on_progress:
@@ -545,8 +567,20 @@ class AgentLoop:
         self._fallback_index = 0
         return False
 
+    def _is_local_provider(self) -> bool:
+        """Return True if the current provider is a slow local model (ollama CPU etc.)."""
+        if not self._config:
+            return False
+        from nanobot.providers.registry import find_by_name
+        provider_name = self._config.get_provider_name(self.model)
+        spec = find_by_name(provider_name) if provider_name else None
+        return bool(spec and spec.is_local)
+
     def _switch_model(self, model: str, provider: LLMProvider | None = None) -> None:
-        """Switch active model (and optionally provider) at runtime."""
+        """Switch active model (and optionally provider) at runtime.
+
+        Also toggles context.local_mode based on whether the new provider is local.
+        """
         self.model = model
         if provider is not None:
             self.provider = provider
@@ -554,6 +588,8 @@ class AgentLoop:
         self.subagents.model = model
         if provider is not None:
             self.subagents.provider = provider
+        # Switch context to minimal mode for slow local models
+        self.context.local_mode = self._is_local_provider()
 
     async def _handle_model_command(self, msg: "InboundMessage") -> "OutboundMessage":
         """Handle /model [name|save|save <name>] command."""

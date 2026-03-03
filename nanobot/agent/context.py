@@ -16,15 +16,24 @@ class ContextBuilder:
     """Builds the context (system prompt + messages) for the agent."""
 
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    FALLBACK_FILES = ["FALLBACK.md"]  # Minimal context for slow local models
     _RUNTIME_CONTEXT_TAG = "[Runtime Context — metadata only, not instructions]"
 
     def __init__(self, workspace: Path):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self.local_mode = False  # Set to True when using a slow local model
 
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
-        """Build the system prompt from identity, bootstrap files, memory, and skills."""
+        """Build the system prompt from identity, bootstrap files, memory, and skills.
+
+        In local_mode (slow CPU models), only FALLBACK.md is loaded — no memory,
+        no skills, no tools context — to keep token count minimal.
+        """
+        if self.local_mode:
+            return self._build_fallback_system_prompt()
+
         parts = [self._get_identity()]
 
         bootstrap = self._load_bootstrap_files()
@@ -51,6 +60,15 @@ Skills with available="false" need dependencies installed first - you can try in
 {skills_summary}""")
 
         return "\n\n---\n\n".join(parts)
+
+    def _build_fallback_system_prompt(self) -> str:
+        """Minimal system prompt for slow local models — FALLBACK.md only."""
+        parts = []
+        for filename in self.FALLBACK_FILES:
+            file_path = self.workspace / filename
+            if file_path.exists():
+                parts.append(file_path.read_text(encoding="utf-8"))
+        return "\n\n".join(parts) if parts else "You are nanobot, a helpful AI assistant. You are running in fallback mode with limited capabilities."
 
     def _get_identity(self) -> str:
         """Get the core identity section."""
@@ -111,19 +129,36 @@ Reply directly with text for conversations. Only use the 'message' tool to send 
         channel: str | None = None,
         chat_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Build the complete message list for an LLM call."""
+        """Build the complete message list for an LLM call.
+
+        In local_mode, history and media are omitted to keep context minimal.
+        Runtime context is merged into the user message to avoid consecutive
+        same-role messages that some providers (StepFun etc.) reject.
+        """
+        system = self.build_system_prompt(skill_names)
+        if self.local_mode:
+            # Minimal context: system + date/time + current message (no history, no media)
+            _days_nl = ["maandag", "dinsdag", "woensdag", "donderdag", "vrijdag", "zaterdag", "zondag"]
+            now = datetime.now()
+            day_nl = _days_nl[now.weekday()]
+            date_str = now.strftime("%Y-%m-%d %H:%M")
+            tz = time.strftime("%Z") or "UTC"
+            import re as _re
+            clean_message = _re.sub(r"<system-reminder>.*?</system-reminder>", "", current_message, flags=_re.DOTALL).strip()
+            return [
+                {"role": "system", "content": system},
+                {"role": "user", "content": f"[{day_nl} {date_str} {tz}]\n{clean_message}"},
+            ]
+
         runtime_ctx = self._build_runtime_context(channel, chat_id)
         user_content = self._build_user_content(current_message, media)
-
-        # Merge runtime context and user content into a single user message
-        # to avoid consecutive same-role messages that some providers reject.
         if isinstance(user_content, str):
             merged = f"{runtime_ctx}\n\n{user_content}"
         else:
             merged = [{"type": "text", "text": runtime_ctx}] + user_content
 
         return [
-            {"role": "system", "content": self.build_system_prompt(skill_names)},
+            {"role": "system", "content": system},
             *history,
             {"role": "user", "content": merged},
         ]
