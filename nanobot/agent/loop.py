@@ -412,8 +412,10 @@ class AgentLoop:
         key = session_key or msg.session_key
         session = self.sessions.get_or_create(key)
 
-        # Slash commands
-        cmd = msg.content.strip().lower()
+        # Slash commands — extract command from first line, strip injected platform tags
+        import re as _re
+        _clean_content = _re.sub(r"<system-reminder>.*?</system-reminder>", "", msg.content, flags=_re.DOTALL).strip()
+        cmd = _clean_content.split("\n")[0].strip().lower()
         if cmd == "/new":
             lock = self._consolidation_locks.setdefault(session.key, asyncio.Lock())
             self._consolidating.add(session.key)
