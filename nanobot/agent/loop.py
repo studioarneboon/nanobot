@@ -260,6 +260,7 @@ class AgentLoop:
                     thinking_blocks=response.thinking_blocks,
                 )
 
+                _sent_message = False
                 for tool_call in response.tool_calls:
                     tools_used.append(tool_call.name)
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
@@ -268,6 +269,14 @@ class AgentLoop:
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
+                    if tool_call.name == "message":
+                        _sent_message = True
+
+                # After sending a message to the user, stop the loop —
+                # the model has completed its turn, no need to continue.
+                if _sent_message:
+                    final_content = None  # MessageTool already sent it
+                    break
             else:
                 clean = self._strip_think(response.content)
                 # Rate-limit: try automatic fallback to next model in list.

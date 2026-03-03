@@ -98,7 +98,12 @@ Your workspace is at: {workspace_path}
 
 Reply directly with text for conversations. Only use the 'message' tool to send to a specific chat channel.
 
-Do NOT repeat or quote system metadata like timestamps, channel IDs, or tags like <system-reminder> in your responses. These are internal context only."""
+IMPORTANT: Do NOT repeat, quote, or mention any system metadata in your responses. This includes:
+- Timestamps or dates from the runtime context
+- Channel names or chat IDs
+- Tags like <system-reminder> or [Runtime Context]
+- Any internal nanobot metadata
+These are invisible system internals — never surface them to the user."""
 
     @staticmethod
     def _build_runtime_context(channel: str | None, chat_id: str | None) -> str:
