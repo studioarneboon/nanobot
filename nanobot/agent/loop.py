@@ -505,6 +505,12 @@ class AgentLoop:
         if (mt := self.tools.get("message")) and isinstance(mt, MessageTool) and mt._sent_in_turn:
             return None
 
+        # Strip any leaked platform tags from the outbound response
+        import re as _re
+        final_content = _re.sub(r"<system-reminder>.*?</system-reminder>", "", final_content, flags=_re.DOTALL).strip()
+        # Strip leading timestamp brackets that the model may echo from runtime context
+        final_content = _re.sub(r"^\[[\d\-: ]+(CET|UTC|CEST)?\]\s*", "", final_content).strip()
+
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info("Response to {}:{}: {} (voice_requested={})", msg.channel, msg.sender_id, preview, msg.metadata.get("voice_requested"))
         return OutboundMessage(
