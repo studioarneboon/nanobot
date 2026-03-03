@@ -33,6 +33,7 @@ def make_provider(
     """
     from nanobot.providers.custom_provider import CustomProvider
     from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.providers.ollama_provider import OllamaProvider
     from nanobot.providers.openai_codex_provider import OpenAICodexProvider
     from nanobot.providers.registry import find_by_name
 
@@ -57,9 +58,16 @@ def make_provider(
     if resolved_provider_name == "openai_codex" or effective_model.startswith("openai-codex/"):
         return OpenAICodexProvider(default_model=effective_model)
 
-    # Direct providers: bypass LiteLLM, talk straight to OpenAI-compatible endpoint.
-    # Determined by is_direct=True in ProviderSpec (custom, opencode, lmstudio, ollama, ...).
+    # Ollama: use native /api/chat endpoint — 30x faster than OpenAI-compat on CPU
     spec = find_by_name(resolved_provider_name) if resolved_provider_name else None
+    if resolved_provider_name == "ollama":
+        return OllamaProvider(
+            api_base=api_base or "http://127.0.0.1:11434",
+            default_model=effective_model,
+        )
+
+    # Direct providers: bypass LiteLLM, talk straight to OpenAI-compatible endpoint.
+    # Determined by is_direct=True in ProviderSpec (custom, opencode, lmstudio, ...).
     if resolved_provider_name == "custom" or (spec and spec.is_direct):
         return CustomProvider(
             api_key=p.api_key if (p and p.api_key) else "no-key",
